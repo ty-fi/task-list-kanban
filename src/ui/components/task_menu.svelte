@@ -29,6 +29,14 @@
 			);
 		});
 
+		if (taskActions.canEditTaskInModal()) {
+			menu.addItem((i) => {
+				i.setTitle(`Edit task…`).onClick(() =>
+					taskActions.editTaskInModal(task.id),
+				);
+			});
+		}
+
 		menu.addSeparator();
 
 		for (const [tag, label] of Object.entries($columnTagTableStore)) {

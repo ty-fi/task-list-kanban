@@ -9,6 +9,7 @@ import { shouldIncludeFilePath } from "./scope";
 import { PropertySchemaOption } from "../../parsing/properties/property_schema";
 import type { PrepareFileContentsForWrite } from "./source_line_editor";
 import type { DailyNoteSource } from "./daily_note";
+import type { TaskLineEditor } from "./task_modal_edit";
 
 export function createTasksStore(
 	vault: Vault,
@@ -24,6 +25,7 @@ export function createTasksStore(
 	prepareFileContentsForWrite?: PrepareFileContentsForWrite,
 	onArchiveWrite?: (path: string) => void,
 	getDailyNoteSource?: () => DailyNoteSource,
+	getTaskLineEditor?: () => TaskLineEditor | null,
 ): {
 	tasksStore: Writable<Task[]>;
 	taskActions: TaskActions;
@@ -175,6 +177,7 @@ export function createTasksStore(
 		},
 		onArchiveWrite,
 		prepareFileContentsForWrite,
+		getTaskLineEditor,
 	});
 
 	return { tasksStore, taskActions, initialise };

@@ -20,6 +20,7 @@ import { getMarkerSettings } from "./tasks/tasks";
 import { shouldIncludeFilePath } from "./tasks/scope";
 import { createTasksStore } from "./tasks/store";
 import { getDailyNoteSource } from "./tasks/daily_note";
+import { getTasksPluginLineEditor } from "./tasks/task_modal_edit";
 import type { Task } from "./tasks/task";
 import type { TaskActions } from "./tasks/actions";
 import {
@@ -154,6 +155,7 @@ export class KanbanView extends TextFileView {
 			(fileHandle, nextContent) => this.prepareTaskWriteContent(fileHandle, nextContent),
 			path => this.archiveReader.invalidate(path),
 			() => getDailyNoteSource(this.app, get(this.settingsStore).dailyNotePath ?? ""),
+			() => getTasksPluginLineEditor(this.app),
 		);
 
 		this.tasksStore = tasksStore;

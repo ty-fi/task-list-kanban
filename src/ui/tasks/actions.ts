@@ -41,6 +41,7 @@ import {
 	type PrepareFileContentsForWrite,
 } from "./source_line_editor";
 import { buildNewTaskLine, type GroupProperty, type NewTaskColumn } from "./task_line_builder";
+import { planModalEdit, type TaskLineEditor } from "./task_modal_edit";
 import {
 	archiveTransform,
 	changeColumnTransform,
@@ -113,6 +114,13 @@ export type TaskActions = {
 		targetDepth: number,
 	) => Promise<void>;
 	viewFile: (id: string, event?: MouseEvent | KeyboardEvent) => Promise<void>;
+	/** Whether `editTaskInModal` can run (the Tasks plugin is enabled). */
+	canEditTaskInModal: () => boolean;
+	/**
+	 * Opens the task's source line in the Tasks plugin's edit modal and writes
+	 * the result back to the same row. Cancelling writes nothing.
+	 */
+	editTaskInModal: (id: string) => Promise<void>;
 	archiveTasks: (ids: string[]) => Promise<void>;
 	cancelTasks: (ids: string[]) => Promise<void>;
 	restoreTasks: (ids: string[]) => Promise<void>;
@@ -204,6 +212,7 @@ export function createTaskActions({
 	setManualOrder,
 	onArchiveWrite,
 	prepareFileContentsForWrite,
+	getTaskLineEditor,
 }: {
 	tasksByTaskId: Map<string, Task>;
 	metadataByTaskId: Map<string, Metadata>;
@@ -227,6 +236,8 @@ export function createTaskActions({
 	setManualOrder: (next: ManualOrderStore) => void;
 	prepareFileContentsForWrite?: PrepareFileContentsForWrite;
 	onArchiveWrite?: (path: string) => void;
+	/** The modal used by `editTaskInModal`; null/absent hides that action. */
+	getTaskLineEditor?: () => TaskLineEditor | null;
 }): TaskActions {
 	function isInScope(path: string): boolean {
 		return shouldIncludeFilePath(path, getFilenameFilter(), getExcludeFilter(), getBoardFolderPath());
@@ -958,6 +969,49 @@ export function createTaskActions({
 
 			const editorView = workspace.getActiveViewOfType(MarkdownView);
 			editorView?.editor.setCursor(rowIndex);
+		},
+
+		canEditTaskInModal() {
+			return !!getTaskLineEditor?.();
+		},
+
+		async editTaskInModal(id) {
+			const editLine = getTaskLineEditor?.();
+			if (!editLine) {
+				new Notice("Tasks plugin is required to edit a task in a modal.");
+				return;
+			}
+
+			const entry = getTaskWithMetadata(id);
+			if (!entry) {
+				notifyMissingTasks(1, 0);
+				return;
+			}
+
+			const { fileHandle, rowIndex } = entry.metadata;
+			const originalRow = (await readFileRows(vault, fileHandle))[rowIndex];
+			if (originalRow == null) {
+				notifyMissingTasks(1, 0);
+				return;
+			}
+
+			const edited = await editLine(originalRow.replace(/\r$/, ""));
+			const replacement = planModalEdit(originalRow, edited);
+			if (!replacement) return;
+
+			// The modal stays open as long as the user likes, so the file may
+			// have changed underneath it. Only write if the row is still the one
+			// that was edited; otherwise the stored row index may now point at a
+			// different line.
+			const rows = await readFileRows(vault, fileHandle);
+			if (rows[rowIndex] !== originalRow) {
+				new Notice("The task changed while it was being edited, so the edit was not saved.");
+				return;
+			}
+
+			// Replaces only the task's own row; any nested rows below it are kept.
+			rows.splice(rowIndex, 1, ...replacement);
+			await writeFileRows(vault, fileHandle, rows, prepareFileContentsForWrite);
 		},
 
 		getTargetDestination,

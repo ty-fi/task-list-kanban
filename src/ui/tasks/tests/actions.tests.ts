@@ -507,6 +507,117 @@ describe("task actions", () => {
 			);
 		});
 
+		describe("editTaskInModal", () => {
+			it("is unavailable without a task line editor", async () => {
+				const { actions, taskId, contents } = await setupNestedActions("- [ ] Task");
+
+				expect(actions.canEditTaskInModal()).toBe(false);
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe("- [ ] Task");
+			});
+
+			it("passes the source line to the editor and writes the result to the same row", async () => {
+				const editor = vi.fn(async (line: string) => `${line} 📅 2026-12-01`);
+				const { actions, taskId, contents } = await setupNestedActions(
+					"# Heading\n- [ ] Task #backlog ^abc123\n- [ ] Sibling",
+					{ getTaskLineEditor: () => editor },
+				);
+
+				expect(actions.canEditTaskInModal()).toBe(true);
+				await actions.editTaskInModal(taskId);
+
+				expect(editor).toHaveBeenCalledWith("- [ ] Task #backlog ^abc123");
+				expect(contents()).toBe("# Heading\n- [ ] Task #backlog ^abc123 📅 2026-12-01\n- [ ] Sibling");
+			});
+
+			it("writes nothing when the modal is cancelled", async () => {
+				const { actions, taskId, contents } = await setupNestedActions(
+					"- [ ] Task\n- [ ] Sibling",
+					{ getTaskLineEditor: () => async () => "" },
+				);
+
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe("- [ ] Task\n- [ ] Sibling");
+			});
+
+			it("edits only the parent row and keeps nested rows", async () => {
+				const { actions, taskId, contents } = await setupNestedActions(
+					"- [ ] Parent\n  - [ ] Child\n- [ ] Sibling",
+					{ getTaskLineEditor: () => async () => "- [ ] Parent renamed" },
+				);
+
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe("- [ ] Parent renamed\n  - [ ] Child\n- [ ] Sibling");
+			});
+
+			it("keeps the indentation of a nested task shown as its own card", async () => {
+				// Without "Treat nested tasks as subtasks", a child task is its own card.
+				const fileHandle = { path: "tasks.md" };
+				const child = parseTask("\t- [ ] Child", { propertySchema: new NoneSchema() });
+				const { actions, contents } = setupActions(
+					"- [ ] Parent\n\t- [ ] Child\n- [ ] Sibling",
+					PropertySchemaOption.None,
+					new Map([[child.id, child]]),
+					new Map([[child.id, { fileHandle, rowIndex: 1 }]]),
+					fileHandle,
+					[],
+					{ getTaskLineEditor: () => async () => "- [ ] Child ⏫" },
+				);
+
+				await actions.editTaskInModal(child.id);
+
+				expect(contents()).toBe("- [ ] Parent\n\t- [ ] Child ⏫\n- [ ] Sibling");
+			});
+
+			it("inserts both lines when completing a recurring task", async () => {
+				const { actions, taskId, contents } = await setupNestedActions(
+					"- [ ] Water 🔁 every week 📅 2026-11-18\n- [ ] Sibling",
+					{
+						getTaskLineEditor: () => async () =>
+							"- [ ] Water 🔁 every week 📅 2026-11-25\n- [x] Water 🔁 every week 📅 2026-11-18 ✅ 2026-11-18",
+					},
+				);
+
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe(
+					"- [ ] Water 🔁 every week 📅 2026-11-25\n- [x] Water 🔁 every week 📅 2026-11-18 ✅ 2026-11-18\n- [ ] Sibling",
+				);
+			});
+
+			it("keeps CRLF line endings", async () => {
+				const { actions, taskId, contents } = await setupNestedActions(
+					"- [ ] Task\r\n- [ ] Sibling\r\n",
+					{ getTaskLineEditor: () => async (line) => `${line} ⏫` },
+				);
+
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe("- [ ] Task ⏫\r\n- [ ] Sibling\r\n");
+			});
+
+			it("does not write when the line changed while the modal was open", async () => {
+				let setContentsRef: (next: string) => void = () => undefined;
+				const { actions, taskId, contents, setContents } = await setupNestedActions(
+					"- [ ] Task\n- [ ] Sibling",
+					{
+						getTaskLineEditor: () => async () => {
+							setContentsRef("- [ ] Task edited elsewhere\n- [ ] Sibling");
+							return "- [ ] Task from modal";
+						},
+					},
+				);
+				setContentsRef = setContents;
+
+				await actions.editTaskInModal(taskId);
+
+				expect(contents()).toBe("- [ ] Task edited elsewhere\n- [ ] Sibling");
+			});
+		});
+
 		it("moves full owned source blocks to another file and retags only the parent row", async () => {
 			const sourceFile = { path: "source.md" };
 			const destinationFile = { path: "done.md" };
@@ -1412,7 +1523,12 @@ function setupActionsForLine(
 
 async function setupNestedActions(
 	initialContents: string,
-	options: { statusMarkerOrder?: string; doneStatusMarkers?: string; ignoredStatusMarkers?: string } = {},
+	options: {
+		statusMarkerOrder?: string;
+		doneStatusMarkers?: string;
+		ignoredStatusMarkers?: string;
+		getTaskLineEditor?: Parameters<typeof createTaskActions>[0]["getTaskLineEditor"];
+	} = {},
 ) {
 	const fileHandle = { path: "tasks.md" };
 	const fileContents = new Map([[fileHandle.path, initialContents]]);
@@ -1428,20 +1544,21 @@ async function setupNestedActions(
 		ignoredStatusMarkers: options.ignoredStatusMarkers,
 	});
 	const task = Array.from(tasksByTaskId.values())[0]!;
-	const { actions, contents } = setupActions(
+	const { actions, contents, setContents } = setupActions(
 		initialContents,
 		PropertySchemaOption.None,
 		tasksByTaskId,
 		metadataByTaskId as never,
 		fileHandle,
 		[],
-		{ statusMarkerOrder: options.statusMarkerOrder },
+		{ statusMarkerOrder: options.statusMarkerOrder, getTaskLineEditor: options.getTaskLineEditor },
 	);
 
 	return {
 		actions,
 		taskId: task.id,
 		contents,
+		setContents,
 	};
 }
 
@@ -1457,6 +1574,7 @@ function setupActions(
 		keepColumnTagOnCompletion?: boolean;
 		getTaskInsertionSettings?: Parameters<typeof createTaskActions>[0]["getTaskInsertionSettings"];
 		prepareFileContentsForWrite?: Parameters<typeof createTaskActions>[0]["prepareFileContentsForWrite"];
+		getTaskLineEditor?: Parameters<typeof createTaskActions>[0]["getTaskLineEditor"];
 	} = {},
 ) {
 	let fileContents = initialContents;
@@ -1487,12 +1605,16 @@ function setupActions(
 		setManualOrder: () => undefined,
 		getTaskInsertionSettings: options.getTaskInsertionSettings,
 		prepareFileContentsForWrite: options.prepareFileContentsForWrite,
+		getTaskLineEditor: options.getTaskLineEditor,
 	});
 
 	return {
 		actions,
 		fileHandle,
 		contents: () => fileContents,
+		setContents: (next: string) => {
+			fileContents = next;
+		},
 	};
 }
 
